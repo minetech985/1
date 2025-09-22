@@ -1,7 +1,7 @@
-name: Windows RDP via Tailscale (B)
+#name: Windows RDP via Tailscale (B)
 
-on:
-  workflow_dispatch:
+#on:
+ # workflow_dispatch:
     inputs:
       ts_tailnet:
         description: "Tailscale tailnet (e.g. you@gmail.com)"
@@ -28,7 +28,7 @@ on:
         required: false
         default: "0"
 
-  workflow_run:
+ # workflow_run:
     workflows: ["Windows RDP via Tailscale (A)"]
     types: [completed]
 
