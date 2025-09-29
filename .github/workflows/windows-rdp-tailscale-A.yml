@@ -176,23 +176,21 @@ jobs:
           Start-Sleep -Seconds 3
           & $ztExe -q listnetworks
 
-      # ===================== Download & Extract Firefox Portable (FIXED) =====================
-      - name: 📥 Download & Extract Firefox Portable from Dropbox
+      # ===================== Download & Extract Firefox Portable =====================
+      - name: 📥 Download & Extract Firefox Portable to interactive user
         run: |
-          $userProfile = [Environment]::GetFolderPath("UserProfile")
-          $dst  = Join-Path $userProfile "Downloads\FirefoxPortable"
-          $zip  = Join-Path $env:TEMP "FirefoxPortable.zip"
+          # Find the interactive user running explorer.exe
+          $explorerProcess = Get-Process explorer | Select-Object -First 1
+          $interactiveUser = (Get-WmiObject Win32_Process -Filter "ProcessId=$($explorerProcess.Id)").GetOwner().User
 
-          # Clean previous files
+          $dst  = "C:\Users\$interactiveUser\Downloads\FirefoxPortable"
+          $zip  = "$env:TEMP\FirefoxPortable.zip"
+
           if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
           if (Test-Path $zip) { Remove-Item -Force $zip }
 
-          # Download direct Dropbox link
           Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&dl=1" -OutFile $zip -UseBasicParsing
-
-          # Extract to dedicated folder
           Expand-Archive -Path $zip -DestinationPath $dst -Force
-
           Write-Host "Firefox Portable extracted to $dst"
 
       # ===================== Keep alive loop =====================
