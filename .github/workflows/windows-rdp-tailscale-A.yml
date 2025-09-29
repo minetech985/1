@@ -66,21 +66,17 @@ jobs:
           function ToIntOr($v, $def) {
             if ("$v" -match '^\d+$') { [int]$v } else { [int]$def }
           }
-
           $tailnet = $env:RAW_TAILNET
           $apiKey  = $env:RAW_APIKEY
           $authKey = $env:RAW_AUTHKEY
           $pat     = $env:RAW_PAT
-
           $isTest = ($env:RAW_TEST -match '^(?i:true|1|yes|on)$')
           $runtime = ToIntOr $env:RAW_RUNTIME 355
           if ($isTest) { $runtime = 5 }
           if (-not $isTest -and $runtime -lt 6) { $runtime = 355 }
           if ($runtime -gt 360) { $runtime = 355 }
-
           $loops = ToIntOr $env:RAW_LOOPS 0
           if ($loops -lt 0) { $loops = 0 }
-
           if (-not $tailnet -or -not $apiKey -or -not $authKey -or -not $pat) {
             Write-Warning "⚠️ One or more required inputs are missing!"
             Write-Warning "tailnet='$tailnet'"
@@ -88,7 +84,6 @@ jobs:
             Write-Warning "authkey='$authKey'"
             Write-Warning "pat='$pat'"
           }
-
           # Always set outputs (with fallback dummy values)
           "tailnet=$($tailnet ?? 'dummy-tailnet')" | Out-File -Append $env:GITHUB_OUTPUT
           "apikey=$($apiKey ?? 'dummy-apikey')"   | Out-File -Append $env:GITHUB_OUTPUT
@@ -96,7 +91,6 @@ jobs:
           "pat=$($pat ?? 'dummy-pat')"             | Out-File -Append $env:GITHUB_OUTPUT
           "runtime=$runtime" | Out-File -Append $env:GITHUB_OUTPUT
           "loops=$loops"     | Out-File -Append $env:GITHUB_OUTPUT
-
           Write-Host "Resolved: test=$isTest, runtime=$runtime, loops=$loops"
 
       # ===================== Install Tailscale =====================
@@ -156,7 +150,6 @@ jobs:
           & $ts logout | Out-Null
           & $ts up --authkey "${{ steps.cfg.outputs.authkey }}" --hostname "${{ env.TS_HOSTNAME }}" --accept-routes --accept-dns=false
           Start-Sleep -Seconds 2
-
           $ip4 = (& $ts ip -4 | Select-Object -First 1)
           $status = & $ts status --json | ConvertFrom-Json
           $fqdn = $status.Self.DNSName
@@ -164,7 +157,6 @@ jobs:
           "ip4=$ip4"   | Out-File -Append $env:GITHUB_OUTPUT
           "fqdn=$fqdn" | Out-File -Append $env:GITHUB_OUTPUT
           "derp=$derp" | Out-File -Append $env:GITHUB_OUTPUT
-
           "### RDP (A)`nHost: $env:TS_HOSTNAME`nIPv4: $ip4`nMagicDNS: $fqdn`nDERP: $derp`nUser: $env:RDP_USER`nPass: $env:RDP_PASS" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       # ===================== Install ZeroTier =====================
@@ -178,27 +170,30 @@ jobs:
             Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
             Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /qn /norestart" -Wait
           }
-
           Start-Process -FilePath $ztExe -ArgumentList "-C" -WindowStyle Hidden
           Start-Sleep -Seconds 5
-
           & $ztExe -q join 4753cf475fd1d946
           Start-Sleep -Seconds 3
           & $ztExe -q listnetworks
 
-      # ===================== Download & Extract Firefox Portable =====================
+      # ===================== Download & Extract Firefox Portable (FIXED) =====================
       - name: 📥 Download & Extract Firefox Portable from Dropbox
         run: |
-          $zip  = "$env:TEMP\FirefoxPortable.zip"
-          $dst  = "C:\Users\Bullettemporary\Downloads"
-          $ffDir = "$dst\FirefoxPortable"
+          $userProfile = [Environment]::GetFolderPath("UserProfile")
+          $dst  = Join-Path $userProfile "Downloads\FirefoxPortable"
+          $zip  = Join-Path $env:TEMP "FirefoxPortable.zip"
 
-          if (Test-Path $ffDir) { Remove-Item -Recurse -Force $ffDir }
-          if (Test-Path $zip)   { Remove-Item -Force $zip }
+          # Clean previous files
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+          if (Test-Path $zip) { Remove-Item -Force $zip }
 
+          # Download direct Dropbox link
           Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&dl=1" -OutFile $zip -UseBasicParsing
+
+          # Extract to dedicated folder
           Expand-Archive -Path $zip -DestinationPath $dst -Force
-          Write-Host "Firefox Portable extracted to $ffDir"
+
+          Write-Host "Firefox Portable extracted to $dst"
 
       # ===================== Keep alive loop =====================
       - name: ⏳ Keep alive
@@ -239,13 +234,11 @@ jobs:
           $loops=[int]"${{ steps.cfg.outputs.loops }}"
           if ($loops -eq 1) { Write-Host "Loops finished; not dispatching."; exit 0 }
           if ($loops -gt 1) { $next=$loops-1 } else { $next=0 }
-
           $token="${{ steps.cfg.outputs.pat }}"
           if ($token -eq 'dummy-pat') {
             Write-Warning "⚠️ Dummy PAT detected. Skipping workflow B dispatch."
             exit 0
           }
-
           $body=@{
             ref    = "${{ github.ref_name }}"
             inputs = @{
@@ -258,7 +251,6 @@ jobs:
               loops           = "$next"
             }
           } | ConvertTo-Json -Depth 5
-
           Invoke-RestMethod -Method POST `
             -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/windows-rdp-tailscale-B.yml/dispatches" `
             -Headers @{ Authorization = "Bearer $token"; "Accept"="application/vnd.github+json" } `
