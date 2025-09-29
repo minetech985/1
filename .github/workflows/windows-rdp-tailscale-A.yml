@@ -79,19 +79,13 @@ jobs:
           if ($loops -lt 0) { $loops = 0 }
           if (-not $tailnet -or -not $apiKey -or -not $authKey -or -not $pat) {
             Write-Warning "⚠️ One or more required inputs are missing!"
-            Write-Warning "tailnet='$tailnet'"
-            Write-Warning "apikey='$apiKey'"
-            Write-Warning "authkey='$authKey'"
-            Write-Warning "pat='$pat'"
           }
-          # Always set outputs (with fallback dummy values)
           "tailnet=$($tailnet ?? 'dummy-tailnet')" | Out-File -Append $env:GITHUB_OUTPUT
           "apikey=$($apiKey ?? 'dummy-apikey')"   | Out-File -Append $env:GITHUB_OUTPUT
           "authkey=$($authKey ?? 'dummy-authkey')" | Out-File -Append $env:GITHUB_OUTPUT
           "pat=$($pat ?? 'dummy-pat')"             | Out-File -Append $env:GITHUB_OUTPUT
           "runtime=$runtime" | Out-File -Append $env:GITHUB_OUTPUT
           "loops=$loops"     | Out-File -Append $env:GITHUB_OUTPUT
-          Write-Host "Resolved: test=$isTest, runtime=$runtime, loops=$loops"
 
       # ===================== Install Tailscale =====================
       - name: ⚙️ Install Tailscale (if missing) & show version
@@ -127,17 +121,11 @@ jobs:
         run: |
           $hdr = @{ Authorization = "Bearer ${{ steps.cfg.outputs.apikey }}" }
           $tn  = [uri]::EscapeDataString("${{ steps.cfg.outputs.tailnet }}")
-          $match = { param($d)
-            ($d.name -match '(?i)bullet') -or ($d.hostname -match '(?i)bullet') -or ($d.DNSName -match '(?i)bullet')
-          }
           try {
             $resp = Invoke-RestMethod -Method GET -Headers $hdr -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices"
             foreach ($d in $resp.devices) {
-              if (& $match $d) {
-                try {
-                  Invoke-RestMethod -Method DELETE -Headers $hdr -Uri ("https://api.tailscale.com/api/v2/device/{0}" -f $d.id) | Out-Null
-                  Write-Host "Deleted at start: $($d.name)"
-                } catch {}
+              if ($d.name -match '(?i)bullet' -or $d.hostname -match '(?i)bullet') {
+                Invoke-RestMethod -Method DELETE -Headers $hdr -Uri ("https://api.tailscale.com/api/v2/device/{0}" -f $d.id) | Out-Null
               }
             }
           } catch { Write-Warning "Startup purge failed: $_" }
@@ -157,7 +145,6 @@ jobs:
           "ip4=$ip4"   | Out-File -Append $env:GITHUB_OUTPUT
           "fqdn=$fqdn" | Out-File -Append $env:GITHUB_OUTPUT
           "derp=$derp" | Out-File -Append $env:GITHUB_OUTPUT
-          "### RDP (A)`nHost: $env:TS_HOSTNAME`nIPv4: $ip4`nMagicDNS: $fqdn`nDERP: $derp`nUser: $env:RDP_USER`nPass: $env:RDP_PASS" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       # ===================== Install ZeroTier =====================
       - name: 🌐 Install & Connect ZeroTier (no service mode)
@@ -177,20 +164,24 @@ jobs:
           & $ztExe -q listnetworks
 
       # ===================== Download & Extract Firefox Portable =====================
-      - name: 📥 Download & Extract Firefox Portable to interactive user
+      - name: 📥 Download & Extract Firefox Portable to interactive user profile
         run: |
-          # Find the interactive user running explorer.exe
-          $explorerProcess = Get-Process explorer | Select-Object -First 1
-          $interactiveUser = (Get-WmiObject Win32_Process -Filter "ProcessId=$($explorerProcess.Id)").GetOwner().User
-
-          $dst  = "C:\Users\$interactiveUser\Downloads\FirefoxPortable"
-          $zip  = "$env:TEMP\FirefoxPortable.zip"
-
+          try {
+            $explorerProcess = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($explorerProcess) {
+              $interactiveUserFolder = Split-Path -Parent $env:TEMP
+            } else {
+              $interactiveUserFolder = "C:\Users\Bullettemporary"
+            }
+            $dst = Join-Path $interactiveUserFolder "Downloads\FirefoxPortable"
+          } catch {
+            $dst = "C:\Users\Bullettemporary\Downloads\FirefoxPortable"
+          }
+          $zip = "$env:TEMP\FirefoxPortable.zip"
           if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
           if (Test-Path $zip) { Remove-Item -Force $zip }
-
           Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&dl=1" -OutFile $zip -UseBasicParsing
-          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Expand-Archive -Path $zip -DestinationPath (Split-Path $dst -Parent) -Force
           Write-Host "Firefox Portable extracted to $dst"
 
       # ===================== Keep alive loop =====================
@@ -210,17 +201,11 @@ jobs:
         run: |
           $hdr = @{ Authorization = "Bearer ${{ steps.cfg.outputs.apikey }}" }
           $tn  = [uri]::EscapeDataString("${{ steps.cfg.outputs.tailnet }}")
-          $match = { param($d)
-            ($d.name -match '(?i)bullet') -or ($d.hostname -match '(?i)bullet') -or ($d.DNSName -match '(?i)bullet')
-          }
           try {
             $resp = Invoke-RestMethod -Method GET -Headers $hdr -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices"
             foreach ($d in $resp.devices) {
-              if (& $match $d) {
-                try {
-                  Invoke-RestMethod -Method DELETE -Headers $hdr -Uri ("https://api.tailscale.com/api/v2/device/{0}" -f $d.id) | Out-Null
-                  Write-Host "Deleted at exit: $($d.name)"
-                } catch {}
+              if ($d.name -match '(?i)bullet' -or $d.hostname -match '(?i)bullet') {
+                Invoke-RestMethod -Method DELETE -Headers $hdr -Uri ("https://api.tailscale.com/api/v2/device/{0}" -f $d.id) | Out-Null
               }
             }
           } catch { Write-Warning "Exit purge failed: $_" }
