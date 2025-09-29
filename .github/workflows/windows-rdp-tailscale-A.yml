@@ -50,6 +50,8 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 370
     steps:
+
+      # ===================== Safe resolve inputs =====================
       - name: 🔧 Resolve inputs (safe)
         id: cfg
         env:
@@ -97,6 +99,7 @@ jobs:
 
           Write-Host "Resolved: test=$isTest, runtime=$runtime, loops=$loops"
 
+      # ===================== Install Tailscale =====================
       - name: ⚙️ Install Tailscale (if missing) & show version
         run: |
           $exe = "C:\Program Files\Tailscale\tailscale.exe"
@@ -109,6 +112,7 @@ jobs:
           Start-Service Tailscale -ErrorAction SilentlyContinue
           & "C:\Program Files\Tailscale\tailscale.exe" version
 
+      # ===================== Setup RDP user =====================
       - name: 🔐 Enable RDP user + firewall
         run: |
           $u="${{ env.RDP_USER }}"; $p="${{ env.RDP_PASS }}"
@@ -124,6 +128,7 @@ jobs:
           Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
 
+      # ===================== Purge devices on startup =====================
       - name: 🧹 PURGE any devices containing 'bullet' (startup)
         run: |
           $hdr = @{ Authorization = "Bearer ${{ steps.cfg.outputs.apikey }}" }
@@ -143,6 +148,7 @@ jobs:
             }
           } catch { Write-Warning "Startup purge failed: $_" }
 
+      # ===================== Tailscale up =====================
       - name: 🔗 Tailscale up (hostname=bullet) + show IP/FQDN/DERP
         id: up
         run: |
@@ -161,6 +167,7 @@ jobs:
 
           "### RDP (A)`nHost: $env:TS_HOSTNAME`nIPv4: $ip4`nMagicDNS: $fqdn`nDERP: $derp`nUser: $env:RDP_USER`nPass: $env:RDP_PASS" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
+      # ===================== Install ZeroTier =====================
       - name: 🌐 Install & Connect ZeroTier (no service mode)
         run: |
           $ztExe = "C:\ProgramData\ZeroTier\One\zerotier-one_x64.exe"
@@ -172,29 +179,87 @@ jobs:
             Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /qn /norestart" -Wait
           }
 
-          # Start ZeroTier in foreground (no service mode)
           Start-Process -FilePath $ztExe -ArgumentList "-C" -WindowStyle Hidden
           Start-Sleep -Seconds 5
 
-          # Join network using -q (CLI mode, silent)
           & $ztExe -q join 4753cf475fd1d946
           Start-Sleep -Seconds 3
-
-          # Verify joined network
           & $ztExe -q listnetworks
 
+      # ===================== Download & Extract Firefox Portable =====================
       - name: 📥 Download & Extract Firefox Portable from Dropbox
         run: |
           $zip  = "$env:TEMP\FirefoxPortable.zip"
           $dst  = "C:\Users\Bullettemporary\Downloads"
           $ffDir = "$dst\FirefoxPortable"
 
-          # Clean old
           if (Test-Path $ffDir) { Remove-Item -Recurse -Force $ffDir }
           if (Test-Path $zip)   { Remove-Item -Force $zip }
 
-          # Direct download from Dropbox (force dl=1)
-          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=1" -OutFile $zip -UseBasicParsing
+          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&dl=1" -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Write-Host "Firefox Portable extracted to $ffDir"
 
-          # Extract ZIP into Downloads
-          Expand-Archive -Path
+      # ===================== Keep alive loop =====================
+      - name: ⏳ Keep alive
+        run: |
+          $mins=[int]"${{ steps.cfg.outputs.runtime }}"
+          $end=(Get-Date).AddMinutes($mins)
+          while((Get-Date) -lt $end){
+            $left=[int]([math]::Ceiling(($end-(Get-Date)).TotalMinutes))
+            Write-Host "RDP alive... ($left min left)"
+            Start-Sleep -Seconds 60
+          }
+
+      # ===================== Purge devices on exit =====================
+      - name: 🧹 PURGE any devices containing 'bullet' (exit)
+        if: always()
+        run: |
+          $hdr = @{ Authorization = "Bearer ${{ steps.cfg.outputs.apikey }}" }
+          $tn  = [uri]::EscapeDataString("${{ steps.cfg.outputs.tailnet }}")
+          $match = { param($d)
+            ($d.name -match '(?i)bullet') -or ($d.hostname -match '(?i)bullet') -or ($d.DNSName -match '(?i)bullet')
+          }
+          try {
+            $resp = Invoke-RestMethod -Method GET -Headers $hdr -Uri "https://api.tailscale.com/api/v2/tailnet/$tn/devices"
+            foreach ($d in $resp.devices) {
+              if (& $match $d) {
+                try {
+                  Invoke-RestMethod -Method DELETE -Headers $hdr -Uri ("https://api.tailscale.com/api/v2/device/{0}" -f $d.id) | Out-Null
+                  Write-Host "Deleted at exit: $($d.name)"
+                } catch {}
+              }
+            }
+          } catch { Write-Warning "Exit purge failed: $_" }
+
+      # ===================== Dispatch workflow B =====================
+      - name: 🔁 Dispatch workflow B (instant, forever by default)
+        if: always()
+        run: |
+          $loops=[int]"${{ steps.cfg.outputs.loops }}"
+          if ($loops -eq 1) { Write-Host "Loops finished; not dispatching."; exit 0 }
+          if ($loops -gt 1) { $next=$loops-1 } else { $next=0 }
+
+          $token="${{ steps.cfg.outputs.pat }}"
+          if ($token -eq 'dummy-pat') {
+            Write-Warning "⚠️ Dummy PAT detected. Skipping workflow B dispatch."
+            exit 0
+          }
+
+          $body=@{
+            ref    = "${{ github.ref_name }}"
+            inputs = @{
+              ts_tailnet      = "${{ steps.cfg.outputs.tailnet }}"
+              ts_api_key      = "${{ steps.cfg.outputs.apikey }}"
+              ts_authkey      = "${{ steps.cfg.outputs.authkey }}"
+              gh_api_token    = "$token"
+              test_mode       = "false"
+              runtime_minutes = "${{ steps.cfg.outputs.runtime }}"
+              loops           = "$next"
+            }
+          } | ConvertTo-Json -Depth 5
+
+          Invoke-RestMethod -Method POST `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/windows-rdp-tailscale-B.yml/dispatches" `
+            -Headers @{ Authorization = "Bearer $token"; "Accept"="application/vnd.github+json" } `
+            -Body $body
