@@ -1,0 +1,129 @@
+name: Windows RDP via Tailscale + ZeroTier (RunnerAdmin)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts_tailnet:
+        description: "Tailscale tailnet (e.g. you@gmail.com)"
+        required: true
+      ts_api_key:
+        description: "Tailscale API key (device admin, no 'Bearer')"
+        required: true
+      ts_authkey:
+        description: "Tailscale auth key (reusable or ephemeral)"
+        required: true
+      gh_api_token:
+        description: "GitHub Personal Access Token (classic; scopes: repo, workflow)"
+        required: true
+      runtime_minutes:
+        description: "Runtime in minutes (max 360; capped to 355)"
+        required: false
+        default: "355"
+
+concurrency:
+  group: tailscale-rdp-runneradmin
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  RDP_USER: runneradmin
+  RDP_PASS: TK#12345
+  TS_HOSTNAME: bullet
+  ZT_NETWORK: 4753cf475fd1d946
+
+jobs:
+  rdp:
+    runs-on: windows-2022
+    timeout-minutes: 370
+    steps:
+
+      # ===================== Resolve runtime =====================
+      - name: 🔧 Resolve runtime
+        id: cfg
+        env:
+          RAW_RUNTIME: ${{ inputs.runtime_minutes || '355' }}
+        run: |
+          function ToIntOr($v, $def) {
+            if ("$v" -match '^\d+$') { [int]$v } else { [int]$def }
+          }
+          $runtime = ToIntOr $env:RAW_RUNTIME 355
+          if ($runtime -gt 360) { $runtime = 355 }
+          "runtime=$runtime" | Out-File -Append $env:GITHUB_OUTPUT
+          Write-Host "Resolved runtime: $runtime min"
+
+      # ===================== Enable RDP =====================
+      - name: 🔐 Enable RDP for runneradmin
+        run: |
+          $u="${{ env.RDP_USER }}"; $p="${{ env.RDP_PASS }}"
+          $sec = ConvertTo-SecureString $p -AsPlainText -Force
+          Set-LocalUser -Name $u -Password $sec -AccountNeverExpires
+          Enable-LocalUser -Name $u
+          Add-LocalGroupMember -Group Administrators -Member $u -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u -ErrorAction SilentlyContinue
+          Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
+          Write-Host "✅ RDP enabled for $u with password $p"
+          "### RDP Login`nUser: $u`nPass: $p" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      # ===================== Install Tailscale =====================
+      - name: ⚙️ Install & Connect Tailscale
+        run: |
+          $exe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $exe)) {
+            $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe'
+            $dst = "$env:TEMP\tailscale-setup.exe"
+            Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing
+            Start-Process -FilePath $dst -ArgumentList "/quiet" -Wait
+          }
+          Start-Service Tailscale -ErrorAction SilentlyContinue
+          & $exe version
+          & $exe logout | Out-Null
+          & $exe up --authkey "${{ inputs.ts_authkey }}" --hostname "${{ env.TS_HOSTNAME }}" --accept-routes --accept-dns=false
+          Start-Sleep -Seconds 2
+          $ip4 = (& $exe ip -4 | Select-Object -First 1)
+          Write-Host "✅ Tailscale IPv4: $ip4"
+
+      # ===================== Install ZeroTier =====================
+      - name: 🌐 Install & Connect ZeroTier
+        run: |
+          $ztExe = "C:\ProgramData\ZeroTier\One\zerotier-one_x64.exe"
+          if (-not (Test-Path $ztExe)) {
+            Write-Host "⬇️ Downloading ZeroTier..."
+            $url = "https://download.zerotier.com/dist/ZeroTierOne.msi"
+            $msi = "$env:TEMP\ZeroTierOne.msi"
+            Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
+            Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /qn /norestart" -Wait
+          }
+          Start-Sleep -Seconds 5
+          & $ztExe -q join "${{ env.ZT_NETWORK }}"
+          Start-Sleep -Seconds 3
+          & $ztExe -q listnetworks
+
+      # ===================== Download & Extract Firefox =====================
+      - name: 📥 Download & Extract Firefox Portable
+        run: |
+          $zip  = "$env:TEMP\FirefoxPortable.zip"
+          $dst  = "C:\Users\runneradmin\Downloads\FirefoxPortable"
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=1" -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Write-Host "✅ Firefox Portable extracted to $dst"
+
+      # ===================== Keep Alive =====================
+      - name: ⏳ Keep alive
+        run: |
+          $mins=[int]"${{ steps.cfg.outputs.runtime }}"
+          $end=(Get-Date).AddMinutes($mins)
+          while((Get-Date) -lt $end){
+            $left=[int]([math]::Ceiling(($end-(Get-Date)).TotalMinutes))
+            Write-Host "RDP alive... ($left min left)"
+            Start-Sleep -Seconds 60
+          }
