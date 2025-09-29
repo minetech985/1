@@ -1,0 +1,164 @@
+name: Windows RDP via Tailscale (A)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts_tailnet:
+        description: "Tailscale tailnet (e.g. you@gmail.com)"
+        required: true
+      ts_api_key:
+        description: "Tailscale API key (device admin, no 'Bearer')"
+        required: true
+      ts_authkey:
+        description: "Tailscale auth key (reusable or ephemeral)"
+        required: true
+      gh_api_token:
+        description: "GitHub Personal Access Token (classic; scopes: repo, workflow)"
+        required: true
+      firefox_runtime_minutes:
+        description: "Duration to auto-close Firefox (minutes, default 355)"
+        required: false
+        default: "355"
+      disable_autokill:
+        description: "Skip auto-close Firefox? (true/false)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: tailscale-rdp-singleton
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  RDP_USER: runneradmin
+  RDP_PASS: TK#12345
+  TS_HOSTNAME: bullet
+  ZT_NETWORK: 4753cf475fd1d946
+  FIREFOX_DROPBOX_LINK: "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&dl=1"
+
+jobs:
+  rdp:
+    runs-on: windows-2022
+    timeout-minutes: 370
+    steps:
+
+      # ===================== Resolve inputs safely =====================
+      - name: 🔧 Resolve inputs
+        id: cfg
+        env:
+          RAW_TAILNET: ${{ inputs.ts_tailnet }}
+          RAW_APIKEY: ${{ inputs.ts_api_key }}
+          RAW_AUTHKEY: ${{ inputs.ts_authkey }}
+          RAW_PAT: ${{ inputs.gh_api_token }}
+          RAW_FIREFOX_RUNTIME: ${{ inputs.firefox_runtime_minutes }}
+          RAW_DISABLE_AUTOKILL: ${{ inputs.disable_autokill }}
+        run: |
+          function ToIntOr($v, $def) { if ("$v" -match '^\d+$') { [int]$v } else { [int]$def } }
+          $tailnet = $env:RAW_TAILNET
+          $apiKey  = $env:RAW_APIKEY
+          $authKey = $env:RAW_AUTHKEY
+          $pat     = $env:RAW_PAT
+          $firefoxRuntime = ToIntOr $env:RAW_FIREFOX_RUNTIME 355
+          $disableKill = ($env:RAW_DISABLE_AUTOKILL -match '^(?i:true|1|yes|on)$')
+          if (-not $tailnet -or -not $apiKey -or -not $authKey -or -not $pat) {
+            Write-Warning "⚠️ One or more required inputs are missing!"
+          }
+          "tailnet=$($tailnet ?? 'dummy-tailnet')" | Out-File -Append $env:GITHUB_OUTPUT
+          "apikey=$($apiKey ?? 'dummy-apikey')" | Out-File -Append $env:GITHUB_OUTPUT
+          "authkey=$($authKey ?? 'dummy-authkey')" | Out-File -Append $env:GITHUB_OUTPUT
+          "pat=$($pat ?? 'dummy-pat')" | Out-File -Append $env:GITHUB_OUTPUT
+          "firefox_runtime=$firefoxRuntime" | Out-File -Append $env:GITHUB_OUTPUT
+          "disable_autokill=$disableKill" | Out-File -Append $env:GITHUB_OUTPUT
+
+      # ===================== Setup RDP user =====================
+      - name: 🔐 Enable RDP user + firewall
+        run: |
+          $u="${{ env.RDP_USER }}"; $p="${{ env.RDP_PASS }}"
+          $sec = ConvertTo-SecureString $p -AsPlainText -Force
+          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name $u -Password $sec -AccountNeverExpires
+            Add-LocalGroupMember -Group Administrators -Member $u
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
+          } else {
+            Set-LocalUser -Name $u -Password $sec -AccountNeverExpires
+            Enable-LocalUser -Name $u
+          }
+          Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
+
+      # ===================== Tailscale install =====================
+      - name: ⚙️ Install Tailscale & show version
+        run: |
+          $exe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $exe)) {
+            $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe'
+            $dst = "$env:TEMP\tailscale-setup.exe"
+            Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing
+            Start-Process -FilePath $dst -ArgumentList "/quiet" -Wait
+          }
+          Start-Service Tailscale -ErrorAction SilentlyContinue
+          & $exe version
+
+      # ===================== ZeroTier install =====================
+      - name: 🌐 Install & Connect ZeroTier
+        run: |
+          $ztExe = "C:\ProgramData\ZeroTier\One\zerotier-one_x64.exe"
+          if (-not (Test-Path $ztExe)) {
+            $url = "https://download.zerotier.com/dist/ZeroTierOne.msi"
+            $msi = "$env:TEMP\ZeroTierOne.msi"
+            Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
+            Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /qn /norestart" -Wait
+          }
+          Start-Process -FilePath $ztExe -ArgumentList "-C" -WindowStyle Hidden
+          Start-Sleep -Seconds 5
+          & $ztExe -q join ${{ env.ZT_NETWORK }}
+          Start-Sleep -Seconds 3
+          & $ztExe -q listnetworks
+
+      # ===================== Download & Extract Firefox Portable =====================
+      - name: 📥 Download & Extract Firefox Portable
+        run: |
+          $zip = "$env:TEMP\FirefoxPortable.zip"
+          $dst = "C:\Users\runneradmin\Downloads"
+          $ffDir = "$dst\FirefoxPortable"
+          if (Test-Path $ffDir) { Remove-Item -Recurse -Force $ffDir }
+          if (Test-Path $zip)   { Remove-Item -Force $zip }
+          Invoke-WebRequest -Uri "${{ env.FIREFOX_DROPBOX_LINK }}" -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Write-Host "Firefox Portable extracted to $ffDir"
+
+      # ===================== Launch Firefox Portable =====================
+      - name: 🚀 Launch Firefox Portable (low CPU priority)
+        run: |
+          $ffExe = "C:\Users\runneradmin\Downloads\FirefoxPortable\FirefoxPortable.exe"
+          Start-Process -FilePath $ffExe -ArgumentList "-no-remote" -WindowStyle Normal -Priority BelowNormal
+          Write-Host "Firefox Portable launched"
+
+      # ===================== Auto-close Firefox =====================
+      - name: ⏰ Auto-close Firefox after runtime
+        if: ${{ steps.cfg.outputs.disable_autokill != 'True' }}
+        run: |
+          $runtime = [int]${{ steps.cfg.outputs.firefox_runtime }}
+          Write-Host "Firefox will auto-close in $runtime minutes..."
+          Start-Sleep -Seconds ($runtime*60)
+          Write-Host "Auto-closing Firefox..."
+          Get-Process -Name "FirefoxPortable" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      # ===================== Keep workflow alive (RDP) =====================
+      - name: ⏳ Keep alive loop
+        run: |
+          $runtime = [int]${{ steps.cfg.outputs.firefox_runtime }}
+          $end = (Get-Date).AddMinutes($runtime)
+          while((Get-Date) -lt $end){
+            $left=[int]([math]::Ceiling(($end-(Get-Date)).TotalMinutes))
+            Write-Host "RDP alive... ($left min left)"
+            Start-Sleep -Seconds 60
+          }
+
