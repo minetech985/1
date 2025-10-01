@@ -1,5 +1,4 @@
-name: 🖥️ Windows RDP with FirefoxPortable + Tailscale + ZeroTier
-
+name: 🖥️ FAIL
 on: workflow_dispatch
 
 jobs:
