@@ -152,7 +152,7 @@ jobs:
           & $ztExe -q join ${{ steps.cfg.outputs.zerotier }}
           & $ztExe -q listnetworks
 
-            # ===================== Download & Extract Firefox Portable =====================
+                  # ===================== Download & Extract Firefox Portable =====================
       - name: 📥 Download Firefox Portable
         shell: pwsh
         run: |
@@ -167,7 +167,10 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
 
           Expand-Archive -Path $zip -DestinationPath $dst -Force
-          Write-Host "Firefox Portable extracted to $ffDir"
+
+          Write-Host "Extracted contents:"
+          Get-ChildItem -Recurse $dst | Select-Object FullName
+
 
 
       # ===================== Launch Firefox Portable =====================
