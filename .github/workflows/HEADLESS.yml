@@ -44,6 +44,7 @@ env:
   RDP_USER: runneradmin
   RDP_PASS: TK#12345
   TS_HOSTNAME: bullet
+  ZT_NETWORK: 4753cf475fd1d946  # Optional; paused by default
 
 jobs:
   rdp:
@@ -63,14 +64,12 @@ jobs:
           RAW_RUNTIME:  ${{ inputs.runtime_minutes || '355' }}
           RAW_LOOPS:    ${{ inputs.loops || '0' }}
         run: |
-          function ToIntOr($v, $def) {
-            if ("$v" -match '^\d+$') { [int]$v } else { [int]$def }
-          }
+          function ToIntOr($v, $def) { if ("$v" -match '^\d+$') { [int]$v } else { [int]$def } }
           $tailnet = $env:RAW_TAILNET
           $apiKey  = $env:RAW_APIKEY
           $authKey = $env:RAW_AUTHKEY
           $pat     = $env:RAW_PAT
-          $isTest = ($env:RAW_TEST -match '^(?i:true|1|yes|on)$')
+          $isTest  = ($env:RAW_TEST -match '^(?i:true|1|yes|on)$')
           $runtime = ToIntOr $env:RAW_RUNTIME 355
           if ($isTest) { $runtime = 5 }
           if (-not $isTest -and $runtime -lt 6) { $runtime = 355 }
@@ -96,7 +95,7 @@ jobs:
             Start-Process -FilePath $dst -ArgumentList "/quiet" -Wait
           }
           Start-Service Tailscale -ErrorAction SilentlyContinue
-          & "C:\Program Files\Tailscale\tailscale.exe" version
+          & $exe version
 
       # ===================== Setup RDP =====================
       - name: 🔐 Setup RDP
@@ -128,8 +127,8 @@ jobs:
           Write-Host "Host: $env:TS_HOSTNAME"
           Write-Host "IP: $ip4"
 
-      # ===================== Install ZeroTier =====================
-      - name: 🌐 Install ZeroTier
+      # ===================== Install ZeroTier (PAUSED) =====================
+      - name: 🌐 Install ZeroTier (PAUSED)
         run: |
           $ztExe = "C:\ProgramData\ZeroTier\One\zerotier-one_x64.exe"
           if (-not (Test-Path $ztExe)) {
@@ -139,48 +138,33 @@ jobs:
             Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
             Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /qn /norestart" -Wait
           }
-          Start-Process -FilePath $ztExe -ArgumentList "-C" -WindowStyle Hidden
-          Start-Sleep -Seconds 5
-          & $ztExe -q join 4753cf475fd1d946
-          & $ztExe -q listnetworks
+          Write-Host "ZeroTier install completed. Connection is PAUSED to avoid spam."
+          Write-Host "Manual join with network $env:ZT_NETWORK if needed."
 
-     # ===================== Download & Extract Firefox Portable =====================
-- name: 📥 Download & Extract Firefox Portable
-  shell: powershell
-  run: |
-    $zip  = "$env:TEMP\FirefoxPortable.zip"
-    $dst  = "$env:USERPROFILE\Downloads\FirefoxPortable"
-    
-    # Clean previous files if they exist
-    if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
-    if (Test-Path $zip)  { Remove-Item -Force $zip }
-    
-    # Download from Dropbox
-    Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=1" `
-                      -OutFile $zip -UseBasicParsing
-    
-    # Extract safely with overwrite
-    Expand-Archive -Path $zip -DestinationPath $dst -Force
-    
-    Write-Host "Firefox Portable extracted to $dst"
-
+      # ===================== Download & Extract Firefox Portable =====================
+      - name: 📥 Download & Extract Firefox Portable
+        shell: powershell
+        run: |
+          $zip  = "$env:TEMP\FirefoxPortable.zip"
+          $dst  = "$env:USERPROFILE\Downloads\FirefoxPortable"
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+          if (Test-Path $zip)  { Remove-Item -Force $zip }
+          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=1" `
+                            -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Write-Host "Firefox Portable extracted to $dst"
 
       # ===================== Launch Firefox Portable =====================
-      - name: 🚀 Launch Firefox Portable
+      - name: 🚀 Launch Firefox Portable (BelowNormal)
         run: |
-          $ffExe = "$env:USERPROFILE\Downloads\FirefoxPortable.exe"
-          if (-not (Test-Path $ffExe)) {
-            Write-Error "FirefoxPortable.exe not found at $ffExe"
-            exit 1
-          }
+          $ffExe = "$env:USERPROFILE\Downloads\FirefoxPortable\FirefoxPortable.exe"
+          if (-not (Test-Path $ffExe)) { Write-Error "FirefoxPortable.exe not found!"; exit 1 }
           $proc = Start-Process -FilePath $ffExe -ArgumentList "-no-remote" -WindowStyle Normal -PassThru
           Start-Sleep -Seconds 2
           try {
             $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
             Write-Host "FirefoxPortable started with BelowNormal priority."
-          } catch {
-            Write-Warning "Could not adjust priority: $_"
-          }
+          } catch { Write-Warning "Could not adjust priority: $_" }
 
       # ===================== Keep Alive =====================
       - name: ⏳ Keep alive
