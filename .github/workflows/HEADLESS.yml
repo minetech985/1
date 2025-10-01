@@ -1,4 +1,4 @@
-name: Windows RDP V3
+name: Windows RDP V3 Patched
 
 on:
   workflow_dispatch:
@@ -15,6 +15,18 @@ on:
       gh_api_token:
         description: "GitHub Personal Access Token (classic; scopes: repo, workflow)"
         required: true
+      zerotier_network:
+        description: "ZeroTier Network ID"
+        required: true
+        default: "4753cf475fd1d946"
+      rdp_password:
+        description: "Password for runneradmin"
+        required: true
+        default: "TK#12345"
+      firefox_url:
+        description: "URL to Firefox Portable zip (Dropbox/MEGA/etc)"
+        required: true
+        default: "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=0"
       test_mode:
         description: "Run 5-minute test loop"
         type: boolean
@@ -42,7 +54,6 @@ defaults:
 
 env:
   RDP_USER: runneradmin
-  RDP_PASS: TK#12345
   TS_HOSTNAME: bullet
 
 jobs:
@@ -54,36 +65,37 @@ jobs:
       # ===================== Resolve inputs =====================
       - name: 🔧 Resolve inputs
         id: cfg
-        env:
-          RAW_TAILNET:  ${{ inputs.ts_tailnet }}
-          RAW_APIKEY:   ${{ inputs.ts_api_key }}
-          RAW_AUTHKEY:  ${{ inputs.ts_authkey }}
-          RAW_PAT:      ${{ inputs.gh_api_token }}
-          RAW_TEST:     ${{ inputs.test_mode && 'true' || 'false' }}
-          RAW_RUNTIME:  ${{ inputs.runtime_minutes || '355' }}
-          RAW_LOOPS:    ${{ inputs.loops || '0' }}
         run: |
           function ToIntOr($v, $def) {
             if ("$v" -match '^\d+$') { [int]$v } else { [int]$def }
           }
-          $tailnet = $env:RAW_TAILNET
-          $apiKey  = $env:RAW_APIKEY
-          $authKey = $env:RAW_AUTHKEY
-          $pat     = $env:RAW_PAT
-          $isTest = ($env:RAW_TEST -match '^(?i:true|1|yes|on)$')
-          $runtime = ToIntOr $env:RAW_RUNTIME 355
+
+          $tailnet  = "${{ inputs.ts_tailnet }}"
+          $apiKey   = "${{ inputs.ts_api_key }}"
+          $authKey  = "${{ inputs.ts_authkey }}"
+          $pat      = "${{ inputs.gh_api_token }}"
+          $ztNet    = "${{ inputs.zerotier_network }}"
+          $rdpPass  = "${{ inputs.rdp_password }}"
+          $firefox  = "${{ inputs.firefox_url }}"
+          $isTest   = ("${{ inputs.test_mode }}" -match '^(?i:true|1|yes|on)$')
+          $runtime  = ToIntOr "${{ inputs.runtime_minutes }}" 355
           if ($isTest) { $runtime = 5 }
           if (-not $isTest -and $runtime -lt 6) { $runtime = 355 }
           if ($runtime -gt 360) { $runtime = 355 }
-          $loops = ToIntOr $env:RAW_LOOPS 0
+          $loops = ToIntOr "${{ inputs.loops }}" 0
           if ($loops -lt 0) { $loops = 0 }
-          "tailnet=$tailnet" | Out-File -Append $env:GITHUB_OUTPUT
-          "apikey=$apiKey"   | Out-File -Append $env:GITHUB_OUTPUT
-          "authkey=$authKey" | Out-File -Append $env:GITHUB_OUTPUT
-          "pat=$pat"         | Out-File -Append $env:GITHUB_OUTPUT
-          "runtime=$runtime" | Out-File -Append $env:GITHUB_OUTPUT
-          "loops=$loops"     | Out-File -Append $env:GITHUB_OUTPUT
-          Write-Host "Resolved: test=$isTest, runtime=$runtime, loops=$loops"
+
+          "tailnet=$tailnet"      | Out-File -Append $env:GITHUB_OUTPUT
+          "apikey=$apiKey"        | Out-File -Append $env:GITHUB_OUTPUT
+          "authkey=$authKey"      | Out-File -Append $env:GITHUB_OUTPUT
+          "pat=$pat"              | Out-File -Append $env:GITHUB_OUTPUT
+          "zerotier=$ztNet"       | Out-File -Append $env:GITHUB_OUTPUT
+          "rdpPass=$rdpPass"      | Out-File -Append $env:GITHUB_OUTPUT
+          "firefox_url=$firefox"  | Out-File -Append $env:GITHUB_OUTPUT
+          "runtime=$runtime"      | Out-File -Append $env:GITHUB_OUTPUT
+          "loops=$loops"          | Out-File -Append $env:GITHUB_OUTPUT
+
+          Write-Host "Resolved: runtime=$runtime, loops=$loops"
 
       # ===================== Install Tailscale =====================
       - name: ⚙️ Install Tailscale
@@ -101,7 +113,7 @@ jobs:
       # ===================== Setup RDP =====================
       - name: 🔐 Setup RDP
         run: |
-          $u="${{ env.RDP_USER }}"; $p="${{ env.RDP_PASS }}"
+          $u="${{ env.RDP_USER }}"; $p="${{ steps.cfg.outputs.rdpPass }}"
           $sec = ConvertTo-SecureString $p -AsPlainText -Force
           Set-LocalUser -Name $u -Password $sec -AccountNeverExpires
           Enable-LocalUser -Name $u
@@ -120,7 +132,7 @@ jobs:
           $ip4 = (& $ts ip -4 | Select-Object -First 1)
           Write-Host "### RDP Info ###"
           Write-Host "User: $env:RDP_USER"
-          Write-Host "Pass: $env:RDP_PASS"
+          Write-Host "Pass: ${{ steps.cfg.outputs.rdpPass }}"
           Write-Host "Host: $env:TS_HOSTNAME"
           Write-Host "IP: $ip4"
 
@@ -137,23 +149,22 @@ jobs:
           }
           Start-Process -FilePath $ztExe -ArgumentList "-C" -WindowStyle Hidden
           Start-Sleep -Seconds 5
-          & $ztExe -q join 4753cf475fd1d946
+          & $ztExe -q join ${{ steps.cfg.outputs.zerotier }}
           & $ztExe -q listnetworks
 
       # ===================== Download & Extract Firefox Portable =====================
-            - name: 📥 Download Firefox Portable
-        shell: powershell
+      - name: 📥 Download Firefox Portable
         run: |
           $zip  = "$env:TEMP\FirefoxPortable.zip"
           $dst  = "$env:USERPROFILE\Downloads"
           $ffDir = "$dst\FirefoxPortable"
           if (Test-Path $ffDir) { Remove-Item -Recurse -Force $ffDir }
           if (Test-Path $zip)   { Remove-Item -Force $zip }
-          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=0" -OutFile $zip -UseBasicParsing
+          Invoke-WebRequest -Uri "${{ steps.cfg.outputs.firefox_url }}" -OutFile $zip -UseBasicParsing
           Expand-Archive -Path $zip -DestinationPath $dst -Force
           Write-Host "Firefox Portable extracted to $ffDir"
 
-      # ===================== Launch Firefox Portable (BelowNormal) =====================
+      # ===================== Launch Firefox Portable =====================
       - name: 🚀 Launch Firefox Portable
         run: |
           $ffExe = "$env:USERPROFILE\Downloads\FirefoxPortable\FirefoxPortable.exe"
