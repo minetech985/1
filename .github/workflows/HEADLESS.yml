@@ -144,21 +144,26 @@ jobs:
           & $ztExe -q join 4753cf475fd1d946
           & $ztExe -q listnetworks
 
-      # ===================== Download & Extract Firefox Portable =====================
-      - name: 📥 Download Firefox Portable
-        shell: powershell
-        run: |
-          $zip  = "$env:TEMP\FirefoxPortable.zip"
-          $dst  = "$env:USERPROFILE\Downloads"
-          if (Test-Path $zip)   { Remove-Item -Force $zip }
-          if (Test-Path "$dst\FirefoxPortable.exe") { Remove-Item "$dst\FirefoxPortable.exe" -Force }
+     # ===================== Download & Extract Firefox Portable =====================
+- name: 📥 Download & Extract Firefox Portable
+  shell: powershell
+  run: |
+    $zip  = "$env:TEMP\FirefoxPortable.zip"
+    $dst  = "$env:USERPROFILE\Downloads\FirefoxPortable"
+    
+    # Clean previous files if they exist
+    if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+    if (Test-Path $zip)  { Remove-Item -Force $zip }
+    
+    # Download from Dropbox
+    Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=1" `
+                      -OutFile $zip -UseBasicParsing
+    
+    # Extract safely with overwrite
+    Expand-Archive -Path $zip -DestinationPath $dst -Force
+    
+    Write-Host "Firefox Portable extracted to $dst"
 
-          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fo/9n644cwuq4gpw6123dpph/AJvMFsxMkDWK_0FYWDjzJE8?rlkey=i6k3lpcz6t5k0pfaf7h6co8g2&st=mugwmea9&dl=1" -OutFile $zip -UseBasicParsing
-
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $dst, $true)
-          Remove-Item $zip -Force
-          Write-Host "Firefox Portable extracted to $dst\FirefoxPortable.exe"
 
       # ===================== Launch Firefox Portable =====================
       - name: 🚀 Launch Firefox Portable
